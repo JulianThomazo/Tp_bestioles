@@ -351,3 +351,119 @@ d4eda83 TP 02 socle : Notifier, services, HorlogeConfig, test
 ```
 
 Après le retrait, `verify` donne `Tests run: 2, Failures: 0, Errors: 0, Skipped: 0`, `BUILD SUCCESS`.
+
+---
+
+## TP 03
+
+Cette fois je suis sur le port 8081 parce que le 8080 était occupé sur mon poste, toujours sous PowerShell.
+
+### Étape 1 – Validation
+
+En faisant Explore sur start.spring.io avec Validation cochée, j'ai vu qu'il manquait 2 dépendances.
+
+| artifactId | scope |
+|---|---|
+| `spring-boot-starter-validation` | (compile) |
+| `spring-boot-starter-validation-test` | test |
+
+Avec ce starter on a Hibernate Validator, qui est l'implémentation de Jakarta Bean Validation (`@NotBlank`, `@Min`, `@Max`, `@Email`…).
+
+### Étape 4 – Ligne affichée au démarrage
+
+```
+>>> Refuge des Bestioles : 30 places
+```
+
+`RefugeProperties` est un record annoté `@ConfigurationProperties(prefix = "bestioles.refuge")` + `@Validated`. Il est trouvé grâce au `@ConfigurationPropertiesScan` mis sur `BestiolesApplication`. `AffichageRefuge`, lui, est un `ApplicationRunner`, donc il s'exécute juste après `Started …`.
+
+### Étape 5 – capacite-max: 120
+
+Prédiction : l'appli démarre et affiche 50 places, vu que la valeur est plafonnée.
+
+```
+***************************
+APPLICATION FAILED TO START
+***************************
+
+Description:
+
+Binding to target org.sebsy.bestioles.config.RefugeProperties failed:
+
+    Property: bestioles.refuge.capaciteMax
+    Value: "120"
+    Origin: class path resource [application.yaml] - 12:19
+    Reason: doit être inférieur ou égal à 50
+
+
+Action:
+
+Update your application's configuration
+```
+
+Ma prédiction était fausse : quand une valeur est invalide, Spring ne la corrige pas, il ne démarre pas du tout. `12:19` veut dire ligne 12, colonne 19 de `application.yaml`, c'est-à-dire le premier caractère de `120` (avant il y a 4 espaces + `capacite-max:` + 1 espace, donc 18 caractères).
+
+### Étape 6 – capacite-max: trente
+
+Prédiction : la même erreur de validation (`@Min`/`@Max`).
+
+```
+***************************
+APPLICATION FAILED TO START
+***************************
+
+Description:
+
+Failed to bind properties under 'bestioles.refuge.capacite-max' to int:
+
+    Property: bestioles.refuge.capacite-max
+    Value: "trente"
+    Origin: class path resource [application.yaml] - 12:19
+    Reason: failed to convert java.lang.String to @jakarta.validation.constraints.Min @jakarta.validation.constraints.Max int (caused by java.lang.NumberFormatException: For input string: "trente")
+
+Action:
+
+Update your application's configuration
+```
+
+Ma prédiction était fausse, ici l'erreur vient de la conversion et pas de la validation.
+
+Les lignes `Property:` ne sont pas les mêmes : à l'étape 5 on a `bestioles.refuge.capaciteMax` (le nom du champ Java), et ici `bestioles.refuge.capacite-max` (la clé comme elle est écrite dans le YAML). C'est parce qu'il y a deux phases. D'abord la liaison convertit le texte en `int`, et c'est là que ça échoue ici, donc on n'arrive jamais à la validation. Ensuite la validation vérifie les contraintes sur la valeur convertie, et c'est là que ça échouait à l'étape 5.
+
+Pour la langue : à l'étape 5 la raison est en français (« doit être inférieur ou égal à 50 »), car Hibernate Validator traduit le message selon la locale de la JVM, qui est en français ici. À l'étape 6, le message de conversion n'est pas traduit et reste en anglais.
+
+### Étape 7 – Profil dev
+
+Dans `application-dev.yaml` : le nom `Refuge (dev)`, 5 places, `logging.level.org.sebsy: DEBUG`, et le bloc `management` que j'ai déplacé depuis `application.yaml`.
+
+`/actuator/beans` montre toute la structure interne de l'appli (classes, dépendances, configuration). En dev ça aide à diagnostiquer, mais dans un autre environnement c'est une fuite d'infos qu'on peut exploiter, c'est pour ça qu'on ne l'expose qu'en `dev`.
+
+### Étape 12 – Une clé, plusieurs sources
+
+J'ai reconstruit le jar avec `.\mvnw.cmd clean package`, parce qu'au premier essai c'était encore l'ancien jar du TP 02 qui tournait (pas de ligne `>>>`).
+
+| # | Lancement | Prédiction | Obtenu |
+|---|---|---|---|
+| 1 | `java -jar target/bestioles-0.0.1-SNAPSHOT.jar` | 30 places | `>>> Refuge des Bestioles : 30 places` |
+| 2 | idem, `--spring.profiles.active=dev` | Erreur | `>>> Refuge (dev) : 5 places` |
+| 3 | idem 2, variable `BESTIOLES_REFUGE_CAPACITEMAX=3` | 5 places | `>>> Refuge (dev) : 3 places` |
+| 4 | idem 2, `--bestioles.refuge.capacite-max=2` en plus | 30 places | `>>> Refuge (dev) : 2 places` |
+| 5 | idem 2, variable à 3 et argument à 2 | 3 places | `>>> Refuge (dev) : 2 places` |
+| 6 | sans argument de profil, variable `SPRING_PROFILES_ACTIVE=dev` | Erreur | `>>> Refuge (dev) : 5 places` |
+
+Remarques :
+- ligne 2 : le profil vient s'ajouter à `application.yaml`, et comme `email-contact` n'est pas redéfini, on garde celui du fichier de base, donc pas d'erreur ;
+- ligne 3 : la liaison souple fait le lien entre `BESTIOLES_REFUGE_CAPACITEMAX` et `bestioles.refuge.capacite-max` (`_` → `.`, minuscules, tirets ignorés) ;
+- ligne 6 : avec une variable d'environnement on peut fixer n'importe quelle propriété, même `spring.profiles.active`.
+
+### Étape 13 – Ordre de priorité démontré
+
+De la plus forte à la plus faible :
+
+1. argument de ligne de commande (`--clé=valeur`) – passe devant la variable (ligne 5)
+2. variable d'environnement – passe devant le fichier de profil (ligne 3)
+3. `application-dev.yaml` (profil actif) – passe devant le fichier de base (ligne 2)
+4. `application.yaml` – la valeur par défaut (ligne 1)
+
+`.\mvnw.cmd verify` donne `Tests run: 2, Failures: 0, Errors: 0, Skipped: 0`, `BUILD SUCCESS`.
+`git grep -n datasource` ne renvoie aucune ligne, il n'y a pas de configuration de base de données.
