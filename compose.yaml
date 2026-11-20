@@ -1,0 +1,10 @@
+services:
+  mariadb:
+    image: 'mariadb:12.3'
+    environment:
+      - 'MARIADB_DATABASE=bestioles'
+      - 'MARIADB_USER=bestioles'
+      - 'MARIADB_PASSWORD=bestioles'
+      - 'MARIADB_ROOT_PASSWORD=root'
+    ports:
+      - '3306'
