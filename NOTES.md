@@ -467,3 +467,193 @@ De la plus forte à la plus faible :
 
 `.\mvnw.cmd verify` donne `Tests run: 2, Failures: 0, Errors: 0, Skipped: 0`, `BUILD SUCCESS`.
 `git grep -n datasource` ne renvoie aucune ligne, il n'y a pas de configuration de base de données.
+
+---
+
+## TP 04
+
+Toujours sur le port 8081 et sous PowerShell, avec Docker Desktop 29.8.0 et Compose v5.5.1.
+
+### Étape 1 – Dépendances
+
+En faisant Explore sur start.spring.io avec Spring Data JPA, Flyway Migration, MariaDB Driver et Docker Compose Support, j'ai vu qu'il manquait 7 dépendances.
+
+| artifactId | scope | case cochée |
+|---|---|---|
+| `spring-boot-starter-data-jpa` | (compile) | Spring Data JPA |
+| `spring-boot-starter-flyway` | (compile) | Flyway Migration |
+| `flyway-mysql` | (compile) | Flyway **+** MariaDB Driver (vient de la combinaison des deux) |
+| `spring-boot-docker-compose` | runtime, optional | Docker Compose Support |
+| `mariadb-java-client` | runtime | MariaDB Driver |
+| `spring-boot-starter-data-jpa-test` | test | Spring Data JPA |
+| `spring-boot-starter-flyway-test` | test | Flyway Migration |
+
+### Étape 2 – compose.yaml
+
+J'ai pris celui du cours, avec l'image `mariadb:12.3` épinglée (et pas `latest`, qui peut changer de version sans prévenir) et `ports: - '3306'`, sans port hôte.
+
+### Étape 3 – application.yaml
+
+```yaml
+spring:
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    open-in-view: false
+    show-sql: true
+```
+
+Pas besoin d'URL, d'utilisateur ou de mot de passe, c'est Docker Compose qui les donne.
+
+### Étape 4 – Lecture de V1
+
+- Les colonnes qui acceptent `NULL` sont `animal.color` et `person.age`.
+- Les tables qui n'ont pas d'entité sont `person_animals` et `person_role` (ce sont des tables de jointure).
+
+### Étape 5 – Premier démarrage, aucune entité
+
+Prédiction : l'appli ne démarre pas, parce que `validate` trouve des tables qui n'ont pas d'entité.
+
+```
+DockerComposeLifecycleManager : Using Docker Compose file C:\Users\julia\Downloads\bestioles\bestioles\compose.yaml
+DockerCli :  Network bestioles_default Creating
+DockerCli :  Network bestioles_default Created
+DockerCli :  Container bestioles-mariadb-1 Creating
+DockerCli :  Container bestioles-mariadb-1 Created
+DockerCli :  Container bestioles-mariadb-1 Starting
+DockerCli :  Container bestioles-mariadb-1 Started
+DockerCli :  Container bestioles-mariadb-1 Waiting
+DockerCli :  Container bestioles-mariadb-1 Healthy
+FlywayExecutor : Database: jdbc:mariadb://127.0.0.1:49716/bestioles?user=bestioles&password=******** (MariaDB 12.3)
+Database : Using MariaDB 12.3 which is newer than the version Flyway has been verified with. The latest verified version of MariaDB is 11.7.
+JdbcTableSchemaHistory : Schema history table `bestioles`.`flyway_schema_history` does not exist yet
+DbValidate : Successfully validated 2 migrations (execution time 00:00.018s)
+JdbcTableSchemaHistory : Creating Schema History table `bestioles`.`flyway_schema_history` ...
+DbMigrate : Current version of schema `bestioles`: << Empty Schema >>
+DbMigrate : Migrating schema `bestioles` to version "1 - schema"
+DbMigrate : Migrating schema `bestioles` to version "2 - donnees"
+DbMigrate : Successfully applied 2 migrations to schema `bestioles`, now at version v2 (execution time 00:00.094s)
+Started BestiolesApplication in 11.885 seconds (process running for 12.367)
+```
+
+Ma prédiction était fausse, l'appli démarre. `validate` part des entités et vérifie pour chacune que sa table et ses colonnes existent. S'il n'y a pas d'entité, il n'a rien à vérifier, et une table sans entité ne le dérange jamais.
+
+### Étape 8 – Les entités
+
+J'ai fait `Species`, ensuite `Animal` + `Sex`, puis `Person` (`@ManyToMany Set<Animal>` → `person_animals(person_id, animals_id)`) et enfin `Role`, en démarrant l'appli après chaque entité.
+
+`validate` n'a rien refusé pendant que je les écrivais, les quatre sont passées du premier coup.
+
+Au second démarrage : ``Schema `bestioles` is up to date. No migration necessary.``
+
+### Étape 9 – verify
+
+```
+[ERROR] Tests run: 2, Failures: 0, Errors: 1, Skipped: 0
+[ERROR] BUILD FAILURE
+```
+
+Le premier `Caused by:` (celui tout en bas) : `DataSourceProperties$DataSourceBeanCreationException: Failed to determine a suitable driver class` (`Failed to configure a DataSource: 'url' attribute is not specified`).
+
+La cause : pendant les tests, le support Docker Compose est désactivé par défaut (`spring.docker.compose.skip.in-tests=true`), d'ailleurs il n'y a aucune ligne `DockerCli` dans le log du test. Le `@SpringBootTest` n'a donc pas d'URL de base. Je l'ai corrigé en mettant `@SpringBootTest(properties = "spring.docker.compose.skip.in-tests=false")` sur `BestiolesApplicationTests`.
+
+```
+[INFO] Tests run: 2, Failures: 0, Errors: 0, Skipped: 0
+[INFO] BUILD SUCCESS
+```
+
+### Étape 10 – color mappé sur couleur
+
+Prédiction : l'appli démarre et la colonne `couleur` est créée par Hibernate.
+
+```
+Schema validation: missing column [couleur] in table [animal]
+```
+
+Ma prédiction était fausse : en `validate`, Hibernate ne crée rien du tout, il refuse juste de démarrer. J'ai remis `color` après.
+
+(Au premier essai j'avais `Nothing to compile`, la modif n'était pas compilée, donc je l'ai relancé avec `clean`.)
+
+---
+
+### Étape 6 – Où est la base ?
+
+| Lancement | Ligne Flyway | `docker compose port mariadb 3306` |
+|---|---|---|
+| 1 | `jdbc:mariadb://127.0.0.1:61169/bestioles` | `0.0.0.0:61169` |
+| 2 | `jdbc:mariadb://127.0.0.1:61216/bestioles` | `0.0.0.0:61216` |
+
+Avec `ports: - '3306'`, aucun port n'est fixé côté hôte, donc Docker en prend un libre à chaque fois que le conteneur démarre. Comme le port change à chaque lancement, si on l'écrivait dans `application.yaml` le lancement d'après ne marcherait plus. C'est `spring-boot-docker-compose` qui va le relire et qui construit l'URL.
+
+### Étape 7 – flyway_schema_history
+
+```
++---------+-------------+------------+---------------------+---------+
+| version | description | checksum   | installed_on        | success |
++---------+-------------+------------+---------------------+---------+
+| 1       | schema      |  798508587 | 2026-11-20 09:41:23 |       1 |
+| 2       | donnees     | 1985602614 | 2026-11-20 09:41:23 |       1 |
++---------+-------------+------------+---------------------+---------+
+```
+
+Sur mon PC le premier démarrage était à 10:41:23, mais `installed_on` affiche 09:41:23. C'est parce que le conteneur MariaDB est en UTC, alors qu'en novembre Paris est à UTC+1. C'est le même instant dans deux fuseaux différents.
+
+`checksum`, c'est l'empreinte du script : si on modifie une migration déjà appliquée, elle change, et Flyway ne démarre plus.
+
+### Étape 11 – ddl-auto: update
+
+J'ai remis la même erreur de nom (`couleur`), mais avec `ddl-auto: update` (je l'ai mis dans `application.yaml` au lieu de le passer en argument, ça fait la même chose).
+
+Prédiction : l'appli démarre, la colonne `color` est renommée en `couleur` et les données sont gardées.
+
+```
+Hibernate: alter table if exists animal add column couleur varchar(50)
+```
+
+```
++------------+-------------+------+-----+---------+----------------+
+| Field      | Type        | Null | Key | Default | Extra          |
++------------+-------------+------+-----+---------+----------------+
+| id         | int(11)     | NO   | PRI | NULL    | auto_increment |
+| name       | varchar(50) | NO   |     | NULL    |                |
+| sex        | varchar(1)  | NO   |     | NULL    |                |
+| color      | varchar(50) | YES  |     | NULL    |                |
+| species_id | int(11)     | NO   | MUL | NULL    |                |
+| couleur    | varchar(50) | YES  |     | NULL    |                |
++------------+-------------+------+-----+---------+----------------+
++----+---------+--------+---------+
+| id | name    | color  | couleur |
++----+---------+--------+---------+
+|  1 | Rex     | Fauve  | NULL    |
+|  2 | Mia     | Noir   | NULL    |
+|  3 | Caramel | Roux   | NULL    |
+...
+```
+
+Ma prédiction était fausse : `update` ajoute ce qui manque, mais il ne renomme rien et ne supprime jamais rien.
+
+En production, on se serait retrouvé avec une colonne `couleur` vide à côté de `color`. L'appli lirait `couleur` et afficherait donc tous les animaux sans couleur, alors que les vraies valeurs sont toujours dans `color`. Le schéma serait modifié sans migration versionnée, il ne serait pas le même d'une base à l'autre, et rien ne le signalerait au démarrage.
+
+### Étape 12 – Un refus d'une autre nature
+
+Avec `@Table(name = "roles")` sur `Role` (et `validate`) :
+
+```
+Schema validation: missing table [roles]
+```
+
+La première chose que vérifie `validate`, c'est que la table de chaque entité existe. Or `roles` n'existe pas, dans le schéma c'est `role`. Cette fois le refus porte sur une table entière, alors qu'à l'étape 10 c'était sur une colonne.
+
+### Étape 13 – Base neuve
+
+J'ai remis les entités et `application.yaml` comme il faut, puis j'ai fait `docker compose down -v` (ça supprime le conteneur et le volume) et relancé :
+
+```
+JdbcTableSchemaHistory : Schema history table `bestioles`.`flyway_schema_history` does not exist yet
+DbMigrate : Current version of schema `bestioles`: << Empty Schema >>
+DbMigrate : Migrating schema `bestioles` to version "1 - schema"
+DbMigrate : Migrating schema `bestioles` to version "2 - donnees"
+DbMigrate : Successfully applied 2 migrations to schema `bestioles`, now at version v2 (execution time 00:00.267s)
+```
+
+`.\mvnw.cmd verify` donne `Tests run: 2, Failures: 0, Errors: 0, Skipped: 0`, `BUILD SUCCESS`. Comme le code est le même que celui du commit du socle, j'ai `nothing to commit`, donc pour l'approfondissement je commite seulement ce `NOTES.md`.
