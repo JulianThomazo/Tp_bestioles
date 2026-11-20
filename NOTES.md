@@ -657,3 +657,93 @@ DbMigrate : Successfully applied 2 migrations to schema `bestioles`, now at vers
 ```
 
 `.\mvnw.cmd verify` donne `Tests run: 2, Failures: 0, Errors: 0, Skipped: 0`, `BUILD SUCCESS`. Comme le code est le même que celui du commit du socle, j'ai `nothing to commit`, donc pour l'approfondissement je commite seulement ce `NOTES.md`.
+
+---
+
+## TP 05
+
+On est toujours sur le port 8081, et je lance en profil `requetes` :
+`.\mvnw.cmd spring-boot:run "-Dspring-boot.run.profiles=requetes" "-Dspring-boot.run.arguments=--server.port=8081"`
+
+`DemoRequetes` est un `ApplicationRunner` avec `@Profile("requetes")`, donc si ce profil n'est pas actif (pendant `verify` par exemple), on ne voit aucune de ses lignes `>>>`.
+
+### Le tableau
+
+| # | Méthode et arguments | Résultat affiché | SQL relevé dans le journal |
+|---|---|---|---|
+| 1 | `findFirstByCommonName(Chat)` | `Optional[Species{id=1, commonName='Chat'}]` | `select s1_0.id,s1_0.common_name,s1_0.latin_name from species s1_0 where s1_0.common_name=? limit ?` |
+| 2 | `findByLatinNameContainingIgnoreCase(LUPUS)` | `[Species{id=2, commonName='Chien'}]` | `select s1_0.id,s1_0.common_name,s1_0.latin_name from species s1_0 where upper(s1_0.latin_name) like upper(?) escape '\\'` |
+| 3 | `findByLastnameOrFirstname(Martin, Karim)` | Lea Martin, Karim Benali | `select p1_0.id,p1_0.active,p1_0.age,p1_0.firstname,p1_0.lastname,p1_0.login,p1_0.mdp from person p1_0 where p1_0.lastname=? or p1_0.firstname=?` |
+| 4 | `findByAgeGreaterThanEqual(30)` | Henri Lamarque, Karim Benali | `select p1_0.id,…,p1_0.mdp from person p1_0 where p1_0.age>=?` |
+| 5 | `findByActiveTrue()` | Henri, Lea, Karim, Sofia | `select p1_0.id,…,p1_0.mdp from person p1_0 where p1_0.active=true` |
+| 6 | `findBySpecies(Chat)` (espèce lue en base) | Mia, Nala, Tigrou | `select a1_0.id,a1_0.color,a1_0.name,a1_0.sex,a1_0.species_id from animal a1_0 where a1_0.species_id=?` |
+| 7 | `findBySpeciesCommonName(Lapin)` | Caramel, Pomme | `select a1_0.id,a1_0.color,a1_0.name,a1_0.sex,a1_0.species_id from animal a1_0 join species s1_0 on s1_0.id=a1_0.species_id where s1_0.common_name=?` |
+| 8 | `findByColorIn([Roux, Gris])` | Caramel, Pomme | `select a1_0.id,…,a1_0.species_id from animal a1_0 where a1_0.color in (?,?)` |
+| 9 | `countBySex(F)` | `3` | `select count(a1_0.id) from animal a1_0 where a1_0.sex=?` |
+| 10 | `toutesTrieesParNomCommun()` (`@Query`) | Chat, Chien, Lapin | `select s1_0.id,s1_0.common_name,s1_0.latin_name from species s1_0 order by s1_0.common_name` |
+| 11 | `nomCommunCommeMotif(C%)` (`@Query`) | Chat, Chien | `select s1_0.id,s1_0.common_name,s1_0.latin_name from species s1_0 where s1_0.common_name like replace(?,'\\','\\\\')` |
+| 12 | `findAgedBetween(25, 40)` (`@Query`) | Sofia Rossi, Karim Benali | `select p1_0.id,…,p1_0.mdp from person p1_0 where p1_0.age between ? and ? order by p1_0.age` |
+| 13 | `commencantPar(Ca)` (native) | Caramel | `select * from animal where name like concat(?, '%')` |
+| 14 | `findBySexAndSpeciesCommonNameAndColorIsNotNull(M, Chien)` | Rex | `select a1_0.id,…,a1_0.species_id from animal a1_0 join species s1_0 on s1_0.id=a1_0.species_id where a1_0.sex=? and s1_0.common_name=? and a1_0.color is not null` |
+| 15 | `malesColoresDUneEspece(M, Chien)` (`@Query`) | Rex | `select a1_0.id,…,a1_0.species_id from animal a1_0 join species s1_0 on s1_0.id=a1_0.species_id where a1_0.sex=? and s1_0.common_name=? and a1_0.color is not null` |
+| 16 | `findOwnersOf(Mia)` (`@Query`, Mia lue par `findById(2)`) | Lea Martin, Karim Benali | `select p1_0.id,…,p1_0.mdp from person p1_0 where exists(select 1 from person_animals a1_0 where p1_0.id=a1_0.person_id and a1_0.animals_id=?)` |
+| 17 | `sansProprietaire()` (`@Query`) | Caramel | `select a1_0.id,…,a1_0.species_id from animal a1_0 where not exists(select p1_0.id from person p1_0 where exists(select 1 from person_animals a2_0 where p1_0.id=a2_0.person_id and a2_0.animals_id=a1_0.id))` |
+| 18 | `aUnProprietaire(Caramel)` (`@Query`) | `false` | `select case when count(p1_0.id)>0 then true else false end from person p1_0 where exists(select 1 from person_animals a1_0 where p1_0.id=a1_0.person_id and a1_0.animals_id=?)` |
+| 19 | `aUnProprietaire(Mia)` (`@Query`) | `true` | (même SQL que 18) |
+
+(`…` = colonnes identiques à la ligne au-dessus, abrégées ici ; elles sont complètes dans le journal.)
+
+### Étape 4 – Prédictions
+
+- Nom latin : j'avais prédit `where upper(s1_0.latin_name) like upper(?) escape '\'`, avec les `%` mis dans la valeur liée et pas dans le SQL. **Juste** : il n'y a aucun `%` dans le SQL, c'est Spring Data qui lie `%LUPUS%` au `?`.
+- `countBySex(F)` : j'avais prédit un `select a1_0.id, a1_0.name, … where a1_0.sex=?`, avec le comptage fait en Java. **Faux** : Hibernate envoie `select count(a1_0.id) from animal a1_0 where a1_0.sex=?`, c'est la base qui compte et qui renvoie juste un nombre.
+
+À noter aussi : `findBySpecies(chat)` filtre sur `species_id` sans faire de jointure (l'id suffit), alors que `findBySpeciesCommonName` fait un `join species` parce qu'il a besoin de lire `common_name`.
+
+### Étape 12 – Fautes dans les requêtes
+
+**JPQL, `p.nom` dans `findAgedBetween`.** Prédiction : l'appli démarre et l'erreur arrive au premier appel. **Faux** : elle ne démarre même pas, parce que le JPQL est vérifié quand le repository est créé.
+
+```
+Caused by: org.hibernate.query.sqm.PathElementException: Could not resolve attribute 'nom' of 'org.sebsy.bestioles.model.Person'
+```
+
+**Natif, `nom` au lieu de `name` dans `commencantPar`.** Prédiction : l'appli ne démarre pas, vu que le SQL natif est vérifié au démarrage. **Faux** : on a `Started BestiolesApplication in 11.335 seconds`, et l'erreur arrive seulement au premier appel, renvoyée par MariaDB.
+
+```
+Caused by: java.sql.SQLSyntaxErrorException: (conn=5) Unknown column 'nom' in 'WHERE'
+```
+
+Comme Hibernate connaît les entités, il peut valider le JPQL dès le démarrage. Le SQL natif, lui, est envoyé tel quel, et personne ne le vérifie avant qu'il soit exécuté.
+
+`.\mvnw.cmd clean verify` (fin du socle) donne `Tests run: 2, Failures: 0, Errors: 0, Skipped: 0`, `BUILD SUCCESS`.
+
+---
+
+### Étape 5 – findBySpecie
+
+Prédiction : ça plante au démarrage. **Juste** : l'appli ne démarre pas, car Spring Data analyse le nom de chaque méthode quand il crée le repository.
+
+```
+Caused by: org.springframework.data.core.PropertyReferenceException: No property 'specie' found for type 'Animal'; Did you mean 'species'
+```
+
+J'ai enlevé la méthode après.
+
+### Étape 7 – Trois critères
+
+Pour les lignes 14 et 15 du tableau, les deux SQL sont **identiques** (le même `join species` et les trois mêmes conditions). La seule différence est dans le code Java : le nom dérivé est illisible, alors que la `@Query` se lit facilement.
+
+Je garde la `@Query`, parce qu'à partir de trois critères le nom de méthode devient illisible, et la requête JPQL montre clairement ce qu'elle fait, pour le même SQL.
+
+### Étape 9 – Animaux sans propriétaire
+
+Prédiction : 3 animaux, Caramel, Rex et Tigrou. **Faux** : il n'y en a qu'un, Caramel (ligne 17), car Rex appartient à Lea et Tigrou à Sofia. Pour `aUnProprietaire`, on a `false` pour Caramel et `true` pour Mia.
+
+### Étape 10 – Traduction de l'association
+
+```
+select p1_0.id,p1_0.active,p1_0.age,p1_0.firstname,p1_0.lastname,p1_0.login,p1_0.mdp from person p1_0 where exists(select 1 from person_animals a1_0 where p1_0.id=a1_0.person_id and a1_0.animals_id=?)
+```
+
+Hibernate traduit `:animal member of p.animals` par une sous-requête **`exists(select 1 from person_animals …)`**. Il passe donc par la table de jointure `person_animals`, qui n'a pas d'entité, en reliant `person_id` à la personne et `animals_id` à l'animal. Pour « sans propriétaire », on a un `not exists` autour de ce même `exists`.
